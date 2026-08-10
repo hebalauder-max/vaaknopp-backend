@@ -39,15 +39,15 @@ def get_token(cfg):
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         cfg = get_cfg()
-        # Extract reference from path: /api/payment/REFERENCE
-        path = urlparse(self.path).path
-        parts = path.split("/")
-        reference = parts[-1] if len(parts) >= 4 else ""
-        
+        # Read reference from query param: ?ref=xxx
+        qs = urlparse(self.path).query
+        params = parse_qs(qs)
+        reference = params.get("ref", [None])[0]
+
         if not reference:
-            self._json(400, {"error": "Missing reference"})
+            self._json(400, {"error": "Missing 'ref' query parameter"})
             return
-        
+
         try:
             token = get_token(cfg)
             resp = requests.get(
@@ -63,7 +63,7 @@ class handler(BaseHTTPRequestHandler):
             if not resp.ok:
                 self._json(resp.status_code, {"error": data})
                 return
-            
+
             state = (data.get("aggregate") or {}).get("state", "UNKNOWN")
             paid = state in ("RESERVED", "CAPTURED", "SALE")
             self._json(200, {
