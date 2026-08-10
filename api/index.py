@@ -112,6 +112,6 @@ def payment_status():
         return jsonify({"error": str(e)}), 500
 
 
-# Vercel uses this
+# Vercel serverless entrypoint
 if __name__ == "__main__":
     app.run()
