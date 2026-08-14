@@ -1,6 +1,7 @@
-import json, time, uuid, os
+import json, time, uuid, os, re
 from flask import Flask, request, jsonify
 import requests
+import psycopg2
 
 # Base URL: overridable via env for test vs production.
 # Test:    https://apitest.vipps.no
@@ -201,6 +202,72 @@ def webhook():
     # Log for audit; frontend still drives access via polling.
     print(f"[webhook] reference={reference} state={state}", flush=True)
     return jsonify({"received": True})
+
+
+# --- Email collection (opt-in on result screen) ---
+SUBSCRIBE_DATABASE_URL = os.environ.get("SUBSCRIBE_DATABASE_URL", "")
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _db_conn():
+    if not SUBSCRIBE_DATABASE_URL:
+        raise RuntimeError("SUBSCRIBE_DATABASE_URL not configured")
+    return psycopg2.connect(SUBSCRIBE_DATABASE_URL, connect_timeout=8)
+
+
+def _ensure_subscribers_table():
+    if not SUBSCRIBE_DATABASE_URL:
+        return
+    try:
+        conn = _db_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "CREATE TABLE IF NOT EXISTS subscribers ("
+                    "id BIGSERIAL PRIMARY KEY, "
+                    "email TEXT NOT NULL UNIQUE, "
+                    "name TEXT, "
+                    "source TEXT NOT NULL DEFAULT 'matrise-result', "
+                    "created_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+                )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[subscribe] ensure_table failed: {e}", flush=True)
+
+
+@app.route("/api/subscribe", methods=["POST", "OPTIONS"])
+def subscribe():
+    if request.method == "OPTIONS":
+        return ("", 204)
+    body = request.get_json(silent=True) or {}
+    email = (body.get("email") or "").strip().lower()
+    name = (body.get("name") or "").strip()
+    source = (body.get("source") or "matrise-result").strip()
+    if not email:
+        return jsonify({"error": "E-postadresse mangler"}), 400
+    if not _EMAIL_RE.match(email) or len(email) > 254:
+        return jsonify({"error": "Ugyldig e-postadresse"}), 400
+    if len(name) > 200:
+        name = name[:200]
+    try:
+        _ensure_subscribers_table()
+        conn = _db_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO subscribers (email, name, source) VALUES (%s, %s, %s) "
+                    "ON CONFLICT (email) DO NOTHING",
+                    (email, name or None, source),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+        return jsonify({"ok": True, "email": email})
+    except Exception as e:
+        print(f"[subscribe] error: {e}", flush=True)
+        return jsonify({"error": "Kunne ikke lagre e-post"}), 500
 
 
 # Vercel serverless entrypoint
